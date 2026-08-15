@@ -1,93 +1,482 @@
+# 打造业务迭代代理，释放自身生产力
 
-你是一名资深平台工程 Agent。请为我的某个业务项目,从零搭建一套「需求迭代自动化工作台」(下称"工作台")。这套工作台的设计参考一套已验证的成熟范式(见下文"参考范式"),你要做的是**按同样的架构,为我的新项目生成一套等价的、配置驱动的工作台**,而不是照抄某个具体业务。
+> 分享课件 · 2026-06
+> 参考实践：`vist-customer-automation`（开放日预约系统 AI 工作台）｜ `sam-automation` (软件管理系统 AI工作台)
+> 前置了解： cc-connect 
 
-==================================================
-第 0 步:先访谈我,收集搭建所需信息(不要假设,缺什么就问我)
-==================================================
-在动手前,用一组问题向我确认以下输入,并把答案落进配置:
-1. 工作台仓库名与远端(工具仓,独立于业务代码)。
-2. 项目元信息:name / domain(一句话业务域) / language(输出语言,默认中文) / timezone。
-3. 业务代码形态:是「多仓」还是「monorepo 单仓多端」?各业务模块清单,每个模块给出:
-   - key(短标识,如 admin/server/web/api)、显示名、远端 git 地址、(monorepo 时)子目录 subPath、角色描述;
-   - 技术栈与运行时类型 type(node / go / python / static / miniprogram / 其它);
-   - 本地启动命令 devCommand、依赖安装命令、包管理器与 lockfile、必需脚本(如 dev/build);
-   - 本地 dev 访问方式:端口、是否需要自定义 hosts 域名、访问 URL 模板(用 {port} 占位)。
-4. 运行时前置:需要的 node 版本/nvm、go 版本、python 等;哪些只能由我手动满足(VPN、私有源、账号、密钥、AppID 等外部条件)。
-5. 发布(publish)策略:哪些模块支持发布、目标环境(test/prod 的 URL/健康检查)、是否需要人工确认。
-6. 特殊端:如有小程序端,记录微信开发者工具 CLI 路径、AppID;如有其它特殊预览/验证方式一并说明
-把没问清的项标记为 TODO,不要瞎填。
+---
 
-==================================================
-参考范式:工作台的核心架构(请等价复刻)
-==================================================
-【双仓分离】
-- 工具仓(本工作台):只放流程、检查脚本、配置、迭代记录、文档、模板、Cursor 接入。
-- 业务仓:克隆/拆分到 `target-repos/<key>` 子目录副本,各自独立管理 Git(有自己的 origin、分支
-- 工具仓 `.gitignore` 必须忽略 `target-repos/`;**严禁把业务代码提交进工具仓**;业务改动只在对应 `target-repos/<key>` 子仓内、按"单功能单 feature 分支单 commit"提交。
+## 一、我们解决什么问题？
 
-【配置驱动】一切行为由根目录 `automation.config.json` 描述,脚本读配置而非硬编码业务。给出 `docs/automation-config.schema.json`(JSON Schema)并让配置满足它。配置至少包含:
-- `project`: { name, domain, language, timezone, primaryUsers, targetRepositories[] }
-  - targetRepositories[i]: { key, name, url, subPath?, role }
-- `targetRepos`: { localDir:"target-repos", businessDocsDir, overviewDoc, syncBeforeIteratiion[] }
-- `records`: { iterationsDir:"iterations", activeIterationFileName:".active.md", iterationFileName:"iteration.md", activityFileName:"activity.md", statusValues[], requireActivityBeforeStage,
-requireActivityAfterStage }
-- `stages`:
-  - init.autoRepair { agentFirst, installRuntimes, installProjectDependencies, maxAgentRepaor[] }
-  - dev.branchPolicy { baseBranch, mustPullBaseBeforeFeatureBranch, instruction } + dev.localServicePolicy { ifBackendCheckWarning, defaultStartBackend, defaultStartFrontends, openBrowserAfterDev,
-promptLoginForE2EAfterDev, e2eProofCommand }
-  - test / commit / publish(publish: requiresUserConfirmation, required, supportedRepositories[], environments{})
-- `checks`: { defaultScope, runtime{requireNvm,nvm,go,…}, git, cursor, business:{ repositor}
-- 业务运行时配置(每个 key 一份),字段随 type 而定:
-  - 通用:type、blockOnFailure(false 则该仓检查失败只 warning 不阻塞)
-  - node:requiredNodeVersion、packageManager、lockFiles[]、requiredScripts[]、installCommand、devCommand、devHost{hostname,target,port,urlTemplate,openPath}
-  - go:goMod、goSum、dependencyCommand、dependencyCheckCommand、blockOnFailure
-  - miniprogram/static/python:requiredFiles[]、专用子配置(如小程序 preview{cliPath(按平台 map),qrImageName,qrSize,compileCondition})
+### 现状痛点
 
-【CLI:`commands/automation.mjs`(纯 Node ESM,无三方依赖)】
-通过 `package.json` 的 scripts 暴露,命令分发用一个 `commands` 映射表。实现这些命令(行为对齐
-- `check`(full/workspace/business 三个 scope):
-  - 工作台检查:node/nvm/go 等运行时存在与版本、git、Cursor 配置、关键文档存在;
-  - 业务检查:逐个 target 仓——目录/.git 存在、远端匹配、当前分支与 HEAD、运行时依赖(node_modules/go deps)、必需文件与脚本;
-  - 结果汇总写入 `health-check` 报告;`blockOnFailure:false` 的失败记为 warning 不阻塞。
-- `init`:按 init.autoRepair 自动修可处理项(装 nvm/node、go、各仓依赖),**只对外部条件(VPN/私有源/账号/密钥)才请求用户介入**,其余 Agent 自行排障。
-- `sync-target-repos`:按 targetRepositories 克隆/校验各业务仓到 `target-repos/<key>`(monore
-- `new-iteration -- "需求标题"`:在 `iterations/<时间戳-slug>/` 用模板生成迭代文档,并写 `.active.md` 设为当前迭代。
-- `status` / `set-active` / `set-status -- --status <值> --note <原因>` / `complete` / `aba records.statusValues)。
-- `activity`:向当前迭代 `activity.md` 追加阶段记录(每阶段开始/结束都记:Phase/Status/Note/时间)。
-- `dev -- [--repos a,b | --<key>]`:读当前迭代→跑业务 check(有阻塞则中止)→按 localServicePol必要时写 hosts、探测端口、open 浏览器),后端有 warning时默认不启,小程序等特殊端走各自预览;产出 `dev-plan.md` 并记 activity;支持 `--plan`(只出计划不启动)、`--no-open`。
-- `test` / `e2e-proof`:产出测试报告 / 端到端验证证据(截图等)。
-- `publish`:按 stages.publish 与 supportedRepositories/environments 执行或仅产出发布计划(未就绪的端给出明确说明)。
-- 复用的辅助层放 `commands/lib/`:`exec.mjs`(统一进程执行,永不抛异常,返回{ok,stdout,stderr}) 解析各 key 的磁盘路径/monorepo 映射)、`dev-server.mjs`(解析 dev 日志端口、拼访问URL)等;新增运行时类型时以"适配器"方式扩展,保持 type 可插拔。
+| 角色 | 典型困境 |
+| --- | --- |
+| **业务 / 产品** | 提需求靠口头或文档，等研发排期；改完看不到效果，反馈链路长；自身搭建研发环境困难、迭代不规范 |
+| **研发** | 每次迭代重复解释业务背景、环境搭建、规范对齐；Agent 用了但「不可控、不可追溯」 |
+| **团队** | Cursor / Claude Code / Codex 各自为战，缺少统一的迭代管控与留档 |
 
-【迭代生命周期与产物】目录 `iterations/<id>/`,核心产物用 `templates/*.md`
-模板生成:iteration.md、activity.md、health-check.md、product-design.md、ux-design.md、techns.md、e2e-test-cases.md、test-report.md、publish-report.md、external-blockers.md等。生命周期:`check → init → new-iteration → 读业务文档 → dev(业务仓切 feature 分支)→ test → e2e-proof → publish → complete`。
+### 核心命题
 
-【业务知识文档】`docs/`
-下维护:business-domain-overview.md(业务域总览)、business-change-map.md(改动索引)、business- )、external-coordination.md(外部协作/阻塞)、getting-started.md。提供一个脚本(如`bootstrap-business`)用于扫描各业务仓刷新这些介绍文档。
+> **把「AI 写代码」升级为「AI 驱动完整业务迭代」**——  
+> 业务只需聊天提需求，通过代理在规范约束下完成设计 → 开发 → 预览 → 验证，全程可审计。
 
-【Agent/Cursor 接入】
-- 根目录 `AGENTS.md` 与 `CLAUDE.md`:必读顺序、开工检查(先 `npm run check`)、业务路径与运行  业务码进工具仓、不读密钥/.env、中文输出、单功能单 commit、仅外部条件求助用户)。
-- `.cursor/rules/<name>.mdc`(front-matter `alwaysApply: true`):列出"每次工作前必读"清单与开发规则、输出规范。
-- `.cursor/commands/` 下提供 `check.md`/`init.md`/`start.md`/`dev.md`/`publish.md` 等斜杠命
+---
 
-【护栏(务必内建到脚本与文档)】
-- 不把业务代码提交进工具仓;`target-repos/` 被忽略。
-- 不读取/输出任何密钥与 `*/.env`;忽略本地数据目录(如 `data/`)。
-- 业务仓在各自 `target-repos/<key>` 内提交;默认从 baseBranch 切 feature 分支。
-- 仅 VPN/私有源/账号/密钥/AppID 等外部条件才请求用户;其余 Agent 自动排障。
-- 对用户输出用配置里的 language(默认中文),并始终记录路径、命令与验证结果。
+## 二、核心价值（Why）
 
-==================================================
-验收标准
-==================================================
-1. 全新克隆后 `npm install`(若有依赖)+ `npm run check` 能跑通并产出健康检查报告。
-2. `automation.config.json` 满足 `docs/automation-config.schema.json`,且只含我的新项目信息(无任何参考范式里的残留业务名)。
-3. 提供 `test:workspace`(node:test)自检:校验 package.json 中指向 automation.mjs 的脚本都已  出等。
-4. `new-iteration` 能创建迭代并被 `status` 正确列出;`dev --plan` 能对各业务端产出计划而不启动真实服务。
-5. README 写清架构、命令表、各端路径/端口/远端、文档索引。
+### 1. 对业务：零门槛参与迭代
 
-请先进入第 0 步向我提问;待我确认输入后再开始生成文件,并在每个阶段告诉我:
-产出了哪些文件；
-如何验证（具体命令与预期结果）；
-是否有 TODO 或需我手动满足的外部条件。
+- 用 **钉钉/飞书 / 微信扫码** 即可与 AI 代理对话，无需安装 IDE、无需懂 Git
+- 需求表达即触发完整迭代流程，**实时看到开发预览**（H5 / PC 浏览器 / 小程序真机扫码）
+- 产品设计、UX 等关键节点仍保留 **人工确认**，避免 AI 自作主张
 
+### 2. 对研发：释放重复劳动，保留掌控力
+
+- **AI 工作台**统一管控：环境检查、研发规范、dev 模式、本地验证、迭代记录
+- Agent（Cursor / Claude Code / Codex）在工作台约束下工作，**不是裸奔写代码**
+- 每次迭代自动留档 `activity.md`，决策、阻塞、验证结果可追溯
+
+### 3. 对组织：可复制的方法论
+
+- 工作台与业务代码 **分离**：工具仓管流程，业务仓管产品代码
+- `automation.config.json` 一次配置，多 Agent 共用同一套阶段与检查
+- 从「个人效率工具」升级为 **团队级业务迭代基础设施**
+
+### 价值公式
+
+```
+业务生产力释放 = （规范化的 AI 工作台 × 强编码 Agent）÷ 沟通与环境摩擦
+```
+
+---
+
+## 三、整体架构
+
+```mermaid
+flowchart TB
+    subgraph 业务侧["业务侧（钉钉/飞书 / 微信）"]
+        U[业务 / 产品 / 运营]
+        QR[扫码进入对话]
+    end
+
+    subgraph 连接层["连接层（cc-connect）"]
+        CC[AI 代理网关]
+        CC --> |路由消息| Agent
+    end
+
+    subgraph Agent层["Agent 层"]
+        Agent[Cursor / Claude Code / Codex]
+    end
+
+    subgraph 工作台["AI 工作台（automation workspace）"]
+        CFG[automation.config.json]
+        CMD[npm run check / dev / preview / test]
+        ITER[iterations/ 迭代记录]
+        DOCS[业务域文档]
+        Agent --> CMD
+        Agent --> ITER
+        Agent --> DOCS
+        CFG --> CMD
+    end
+
+    subgraph 业务项目["业务项目（target-repos）"]
+        ADMIN[管理端 H5]
+        SERVER[后端 API]
+        MP[微信小程序]
+    end
+
+    U --> QR --> CC
+    CMD --> ADMIN
+    CMD --> SERVER
+    CMD --> MP
+    Agent --> |读写代码| ADMIN
+    Agent --> |读写代码| SERVER
+    Agent --> |读写代码| MP
+    CC --> |推送预览链接 / 二维码| U
+```
+
+### 两层分工
+
+| 层级 | 职责 | 典型产物 |
+| --- | --- | --- |
+| **AI 工作台** | 迭代管控、环境、规范、命令、留档 | `automation.config.json`、`iterations/`、`AGENTS.md` |
+| **业务项目** | 真实产品代码 | `target-repos/admin`、`server`、`miniprogram` |
+| **cc-connect 代理** | 把 IM 聊天桥接到 Agent + 工作台 | 钉钉/飞书/微信/auth2会话、预览推送 |
+| **编码 Agent** | 理解需求、写代码、跑命令 | Cursor / Claude Code / Codex |
+
+---
+
+## 四、主流程讲解
+
+### 流程总览（两阶段建设）
+
+```mermaid
+sequenceDiagram
+    participant 业务 as 业务（钉钉/飞书/微信）
+    participant CC as cc-connect 代理
+    participant Agent as Cursor/Claude Agent
+    participant WB as AI 工作台
+    participant Biz as 业务项目代码
+
+    Note over WB,Biz: 阶段一：搭建 AI 工作台（一次性 / 持续演进）
+    Agent->>WB: npm run check / init
+    Agent->>WB: 读取 AGENTS.md + 业务文档
+    WB->>Biz: sync target-repos
+
+    Note over 业务,Biz: 阶段二：业务扫码迭代（日常）
+    业务->>CC: 扫码，描述需求
+    CC->>Agent: 转发需求 + 工作台上下文
+    Agent->>WB: new-iteration，走各 stage
+    Agent->>Biz: 开发、改代码
+    Agent->>WB: npm run dev / preview
+    WB-->>CC: 预览 URL / 小程序二维码
+    CC-->>业务: 推送预览，业务反馈
+    Agent->>WB: 更新 activity.md，complete
+```
+
+---
+
+### 阶段一：围绕业务项目打造 AI 工作台
+
+> 参考项目：`vist-customer-automation`  
+> 路径：`/Users/xinyu.wang06/codelib/yuyueAI/vist-customer-automation`
+
+#### Step 1.1 定义工作台与业务仓边界
+
+- **工具仓**（automation workspace）：流程脚本、配置、迭代记录、Agent 规则
+- **业务仓**（target-repos）：admin / server / miniprogram 等真实代码
+- 工具仓 `.gitignore` 忽略 `target-repos/`，**业务提交在子仓内完成**
+
+#### Step 1.2 编写 `automation.config.json`
+
+核心配置块：
+
+| 配置块 | 作用 |
+| --- | --- |
+| `project.targetRepositories` | 声明多仓映射（key、URL、子路径、角色） |
+| `targetRepos` | 本地目录、同步策略、Agent 必读业务文档 |
+| `stages` | check → init → 设计 → dev → test → commit → publish |
+| `checks` | Node/Go/微信工具链、Git、依赖、业务文档完整性 |
+| `records` | 迭代目录规范、`activity.md` 写入策略 |
+
+#### Step 1.3 沉淀 Agent 指引
+
+- `AGENTS.md` / `CLAUDE.md` / `.cursor/rules`：Agent 开工必读顺序
+- `docs/business-domain-overview.md`：业务域总览
+- `docs/business-repositories/*.md`：各端代码地图
+- `docs/external-coordination.md`：权限、VPN、微信 AppID 等外部协作说明
+
+#### Step 1.4 提供统一命令入口
+
+```bash
+npm run check              # 开工检查（工作台 + 业务环境）
+npm run init               # 自动修复可处理项
+npm run new-iteration -- "需求标题"
+npm run dev -- --repos admin    # 启动本地 dev（策略可配置）
+npm run preview            # 小程序真机预览（输出二维码）
+npm run test               # 测试留档
+npm run status             # 查看迭代状态
+```
+
+Cursor 内还可通过 `/check`、`/init`、`/start`、`/dev` 等斜杠命令触发。
+
+#### Step 1.5 与 Cursor / Claude Code / Codex 配合
+
+- 三类 Agent **共用同一工作台**，不各写一套流程
+- Agent 通过读 `AGENTS.md` + `iterations/.active.md` 知道「当前在做什么」
+- 阶段产物写入 `iterations/<id>/` 下对应 md 文件，形成 **可审计流水线**
+
+---
+
+### 阶段二：cc-connect 代理 + 业务扫码迭代
+
+#### Step 2.1 cc-connect 的角色
+
+**cc-connect** 是连接 **IM（钉钉/飞书 / 微信）** 与 **编码 Agent + AI 工作台** 的网关：
+
+| 能力 | 说明 |
+| --- | --- |
+| 身份与会话 | 业务扫码绑定会话，无需 IDE 登录 |
+| 消息路由 | 把自然语言需求转发给后端 Agent 进程 |
+| 上下文注入 | 附带当前 active iteration、工作台路径 |
+| 结果回传 | 预览链接、小程序二维码、阶段确认卡片推回 IM |
+
+#### Step 2.2 业务侧典型交互
+
+1. 业务在 钉钉/飞书 / 微信群扫 **项目专属二维码**
+2. 发送：「给展厅预约小程序加一个分享功能，管理端能下载分享码」
+3. 代理触发 Agent → 工作台 `new-iteration` → 走标准 stage
+4. 产品设计阶段：代理推送设计摘要，业务回复「确认」或修改意见
+5. 开发完成后：代理推送 **admin 本地预览 URL** 或 **小程序真机预览二维码**
+6. 业务扫码体验 → 反馈「按钮太小」→ Agent 继续 dev → 再推送预览
+7. 迭代 complete，全程记录在 `activity.md`
+
+#### Step 2.3 实时开发预览的两条路径
+
+| 端 | 预览方式 | 命令 / 机制 |
+| --- | --- | --- |
+| **管理端 H5** | 浏览器打开 `http://local.vist-admin.test:57000` | `npm run dev -- --repos admin` |
+| **微信小程序** | 微信开发者工具 `cli preview` → 终端二维码 + 保存 PNG | `npm run preview` |
+
+小程序预览前置条件（一次性）：
+- 微信开发者工具已登录
+- 设置 → 安全 → 开启「服务端口」
+- 指定页面：`npm run preview -- --page pages/detail/index`
+
+---
+
+## 五、迭代阶段详解与注意点
+
+### Stage 0：check / init — 开工检查
+
+**做什么**  
+验证工作台结构、运行时（nvm/Node/Go）、Git、业务仓同步、依赖安装、业务文档齐全。
+
+**注意点**
+
+| ⚠️ | 说明 |
+| --- | --- |
+| 先 check 再迭代 | Agent 默认 `npm run check`，失败则 `npm run init` 自动修复 |
+| 外部阻塞要显式记录 | 权限、VPN、私有源、微信 AppID 等 **不静默跳过**，写入 `activity.md` |
+| 后端 warning 策略 | 配置 `ifBackendCheckWarning: frontend-only`，避免后端挂掉阻塞前端 dev |
+
+---
+
+### Stage 1：pro design / ux design — 设计确认
+
+**做什么**  
+产出 `product-design.md`、`ux-design.md`（涉及 UI 时），业务确认范围与交互。
+
+**注意点**
+
+| ⚠️ | 说明 |
+| --- | --- |
+| **必须人工确认** | `requiresUserConfirmation: true`，代理不可自动跳过 |
+| 范围写清 In/Out Scope | 避免 Agent 过度实现（参考「小程序分享功能」迭代） |
+| cc-connect 场景 | 通过 IM 卡片推送摘要，业务回复「确认」即等价于点头 |
+
+---
+
+### Stage 2：technical design / use case — 技术方案与用例
+
+**做什么**  
+`technical-design.md`、`api-test-cases.md`、`e2e-test-cases.md`。
+
+**注意点**
+
+| ⚠️ | 说明 |
+| --- | --- |
+| 技术设计默认不需业务确认 | 但文档必须可查，方便研发 review |
+| 用例驱动 test 阶段 | test stage 以用例为验收标准，失败则回 dev 重试 |
+
+---
+
+### Stage 3：dev — 开发与本地验证
+
+**做什么**  
+在业务仓切功能分支、写代码、本地编译验证、`activity.md` 记录每轮进展。
+
+**注意点**
+
+| ⚠️ | 说明 |
+| --- | --- |
+| 工具仓 vs 业务仓提交 | 代码 commit 在 `target-repos/<key>` 内，不在工具仓 |
+| dev 启动策略 | 默认只启本次涉及前端；miniprogram 不自动启，需显式 `preview` |
+| 阻塞要可恢复 | 如 Go 私有源、WX_APPSECRET 缺失——记录阻塞 + 已完成的代码，权限到位后继续 |
+| 每阶段写 activity | `requireActivityBeforeStage` / `AfterStage` 保证可追溯 |
+
+**参考案例**（vist-customer-automation / 小程序分享功能）：
+- 三端并行改：miniprogram 分享 API + server 小程序码接口 + admin 下载 UI
+- 后端编译因私有源 blocked，前端 tsc 已通过，阻塞项明确记录而非假装完成
+
+---
+
+### Stage 4：preview — 实时预览推送给业务
+
+**做什么**  
+启动 dev server 或调用微信 CLI 生成真机预览二维码，推送给业务扫码体验。
+
+**注意点**
+
+| ⚠️ | 说明 |
+| --- | --- |
+| 小程序 ≠ H5 | 必须走 `npm run preview`，不能假设浏览器能测小程序 |
+| 二维码落盘 | 保存到 `iterations/<id>/miniprogram-preview-qr.png`，cc-connect 可转发 |
+| 环境变量 | 如 `WX_QR_ENV=trial` 用于体验版小程序码 |
+| 指定页面 | 复杂入口用 `--page` 或 `--compile-condition` |
+
+---
+
+### Stage 5：test — 测试留档
+
+**做什么**  
+按用例执行，产出 `test-report.md`；不通过则回 dev，或确认 external-blocker。
+
+**注意点**
+
+| ⚠️ | 说明 |
+| --- | --- |
+| 本地环境地址写死在 config | admin `57000`、API `57001`，Agent 与 test 脚本一致 |
+| 外部阻塞 vs 代码 bug | 区分记录，避免无限 retry |
+
+---
+
+### Stage 6：commit / publish — 收尾与发布
+
+**做什么**  
+汇总变更、业务仓 commit；publish 按策略（当前 vist 项目为 local-only）。
+
+**注意点**
+
+| ⚠️ | 说明 |
+| --- | --- |
+| publish 需显式确认 | `requiresUserConfirmation: true` |
+| 多仓发布顺序 | 先后端 / 前端 / 小程序，依赖关系写在 `external-coordination.md` |
+| 不把 `.env` 提交或输出 | 敏感信息仅记录「需要配置什么」 |
+
+---
+
+## 六、关键设计原则（踩坑总结）
+
+### 1. 工作台是「护栏」，不是「另一个项目」
+
+- 业务代码永远在 target-repos，工作台只放流程与记录
+- Agent 的所有动作应能映射到 `npm run *` 命令或 iteration 文件
+
+### 2. 文档先于代码
+
+- `bootstrap-business` 生成业务地图，Agent 迭代前必读
+- 减少「Agent 每次从零摸索三端结构」的 token 与时间浪费
+
+### 3. 阻塞要可见、可协作
+
+- `activity.md` + `external-coordination.md` 是跨角色协作界面
+- cc-connect 应把阻塞摘要推给业务，而非 Agent 悄悄卡住
+
+### 4. 预览是闭环的关键
+
+- 业务扫码看到效果 → 反馈 → 再改 → 再预览，形成 **分钟级迭代**
+- H5 与小程序预览链路不同，配置里分开写
+
+### 5. 多 Agent 兼容，单配置源
+
+- Cursor rules、Claude Code、Codex 读同一套 `AGENTS.md` + config
+- 未来 MCP 化（见 `docs/mcp-roadmap.md`）也复用同一 config，不 fork 流程
+
+---
+
+## 七、落地 checklist
+
+### 搭建 AI 工作台
+
+- [ ] 创建 automation workspace 仓库
+- [ ] 编写 `automation.config.json`（stages / checks / targetRepos）
+- [ ] 编写 `AGENTS.md` 与 Cursor rules
+- [ ] 配置 target-repos 多仓映射与 sync 脚本
+- [ ] 生成业务域文档（`bootstrap-business`）
+- [ ] 跑通 `npm run check` → `new-iteration` → `dev` → `preview`
+
+### 接入 cc-connect
+
+- [ ] 部署 cc-connect 网关，绑定工作台路径
+- [ ] 配置 钉钉/飞书 / 微信扫码入口与项目 QR
+- [ ] 实现：需求转发、确认卡片、预览链接/二维码回传
+- [ ] 权限边界：Agent 可读写业务仓，不可泄露 `.env`
+
+### 试运行
+
+- [ ] 选一个小需求（如 UI 微调）走通全链路
+- [ ] 业务扫码预览并反馈
+- [ ] 检查 `iterations/<id>/` 留档是否完整
+- [ ] 复盘阻塞项，更新 `external-coordination.md`
+
+---
+
+## 八、参考项目速览
+
+**项目**：`vist-customer-automation` — 米哈游开放日预约系统  
+**业务三端**：
+
+| 模块 | 路径 | 技术栈 |
+| --- | --- | --- |
+| 管理端 | `target-repos/admin` | React + Vite，端口 57000 |
+| 后端 | `target-repos/server` | Go + Gin，端口 57001 |
+| 小程序 | `target-repos/miniprogram` | 微信原生 |
+
+**已验证迭代示例**：
+- `iterations/20260626-1130-小程序分享功能/` — 三端联动 + 真机预览
+- `iterations/20260625-1624-管理端展厅日期开放设置展示一个季度/` — 完整 stage 产物
+
+**关键文件索引**：
+
+```
+vist-customer-automation/
+├── automation.config.json    # 主配置
+├── AGENTS.md                 # Agent 必读
+├── commands/automation.mjs   # 命令实现
+├── iterations/               # 迭代记录
+├── docs/                     # 业务域 & 协作文档
+└── target-repos/             # 业务代码（gitignore）
+    ├── admin/
+    ├── server/
+    └── miniprogram/
+```
+
+---
+
+## 九、总结
+
+| 维度 | 传统模式 | 业务迭代代理模式 |
+| --- | --- | --- |
+| 提需求 | 文档 / 会议 / 排期 | 钉钉/飞书 / 微信聊天 |
+| 开发 | 研发手动搭环境写代码 | Agent + 工作台自动化流水线 |
+| 看效果 | 等部署 / 等测试环境 | 本地 dev + 真机扫码预览 |
+| 留档 | 分散在 IM / PR / 口头 | `iterations/` 统一审计 |
+| 研发角色 | 执行者 | **迭代管控者 + 规则制定者** |
+
+> **一句话**：用 AI 工作台管住迭代质量，用 cc-connect 把业务拉进闭环，用 Cursor/Claude 释放编码产能——  
+> 研发从「写每一行代码」转向「设计可复制的业务迭代基础设施」。
+
+---
+
+## 附录1：分享时可演示的 Command Demo
+
+```bash
+# 1. 开工
+cd vist-customer-automation
+npm run check
+
+# 2. 新建迭代
+npm run new-iteration -- "演示：首页 Banner 文案调整"
+
+# 3. 启动管理端预览
+npm run dev -- --repos admin
+# → 浏览器打开 http://local.vist-admin.test:57000
+
+# 4. 小程序真机预览
+npm run preview
+# → 终端二维码 + iterations/<id>/miniprogram-preview-qr.png
+
+# 5. 查看状态
+npm run status
+```
+
+## 附录2：业务与代理聊天
+```text
+# 可运行 /mode yolo
+
+
+# 发起指令
+预览小程序
+
+# 发起迭代
+改一下xxxx，加一个xxx
+
+```
+
+---
+
+
+
+*课件版本 v1.0 · 基于 vist-customer-automation 实践整理*
