@@ -1,7 +1,6 @@
 # 打造业务迭代代理，释放自身生产力
 
 > 分享课件 · 2026-06
-> 参考实践：`vist-customer-automation`（开放日预约系统 AI 工作台）｜ `sam-automation` (软件管理系统 AI工作台)
 > 前置了解： cc-connect 
 
 ---
