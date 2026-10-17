@@ -138,8 +138,6 @@ sequenceDiagram
 
 ### 阶段一：围绕业务项目打造 AI 工作台
 
-> 参考项目：`vist-customer-automation`  
-> 路径：`/Users/xinyu.wang06/codelib/yuyueAI/vist-customer-automation`
 
 #### Step 1.1 定义工作台与业务仓边界
 
@@ -215,7 +213,7 @@ Cursor 内还可通过 `/check`、`/init`、`/start`、`/dev` 等斜杠命令触
 
 | 端 | 预览方式 | 命令 / 机制 |
 | --- | --- | --- |
-| **管理端 H5** | 浏览器打开 `http://local.vist-admin.test:57000` | `npm run dev -- --repos admin` |
+| **管理端 H5** | 浏览器打开 `本地开发网址` | `npm run dev -- --repos admin` |
 | **微信小程序** | 微信开发者工具 `cli preview` → 终端二维码 + 保存 PNG | `npm run preview` |
 
 小程序预览前置条件（一次性）：
